@@ -33,6 +33,8 @@ class BPESymbolic:
 
     def __call__(self, data: Dict[str, np.ndarray]) -> Dict[str, Any]:
         report = data.get("report", "")
+        if self.args.condition:
+            data["ecg"] = data["ecg"][self.args.condition_lead]
         per_mod_tokens, mn, mx = self.signal_to_bpe_tokens(data["ecg"])
         skip_pad = "eval" in self.args.mode
         seq = self.build_autoregressive_sequence(per_mod_tokens)
