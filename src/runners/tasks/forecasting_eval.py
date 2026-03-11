@@ -20,10 +20,20 @@ def eval_forecasting(nn, dataloader, args):
     )
     device = next(nn.parameters()).device
     data_repr = dataloader.dataset.data_representation
-    plot_dir = f"{args.run_dir}/forecast_plots"
+    condition_name = f"{args.condition}" if args.condition else f"{args.condition}_{args.condition_lead}"
+    data_names = "_".join(args.data)
+    plot_dir = f"{args.run_dir}/{data_names}_{args.forecast_ratio}_{args.bpe_symbolic_len}_{condition_name}_{args.lead_tokens}"
     DirFileManager.ensure_directory_exists(folder=plot_dir)
     all_acc, all_sig = [], []
     max_seq_len = args.bpe_symbolic_len
+
+    if args.condition:
+        n_leads = len(args.condition_lead)
+        lead_names = [PTB_ORDER[i] for i in args.condition_lead]
+    else:
+        n_leads = len(PTB_ORDER)
+        lead_names = PTB_ORDER
+    n_total = n_leads * args.segment_len
 
     with torch.no_grad():
         for step, batch in enumerate(progress):
@@ -37,14 +47,12 @@ def eval_forecasting(nn, dataloader, args):
                                return_new_only=True, return_logits=False).cpu().numpy()
             gt = labels[:, :pred.shape[1]]
             all_acc.append((pred == gt).mean())
-            n_leads = len(PTB_ORDER)
-            n_total = n_leads * args.segment_len
             for i in range(len(gt)):
                 mn, mx = batch["min"][i].item(), batch["max"][i].item()
                 ps = data_repr.decode(pred[i].tolist(), mn, mx)
                 gs = data_repr.decode(gt[i].tolist(), mn, mx)
                 all_sig.append(forecast_metrics(ps, gs))
-                if step < 30 and i == 0:
+                if step < 20 and i == 0:
                     ctx = data_repr.decode(tgt_ids[0].tolist(), mn, mx)
                     n_ctx = len(ctx)
                     n_gt_end = min(len(ctx) + len(gs), n_total)
@@ -53,9 +61,9 @@ def eval_forecasting(nn, dataloader, args):
                     full_pred = np.pad(np.concatenate([ctx, ps]), (0, max(0, n_total - len(ctx) - len(ps))))[:n_total].reshape(n_leads, args.segment_len)
                     plot_forecast(full_gt, full_pred, n_ctx, n_gt_end, n_pred_end,
                                   report, f"{plot_dir}/plot_{step}.png",
-                                  segment_len=args.segment_len, sf=args.sf)
-            # if step > 2:
-            #     break
+                                  segment_len=args.segment_len, leads=lead_names, sf=args.sf)
+            if step > 3:
+                break
 
     metrics = {"accuracy": float(np.nanmean(all_acc))}
     for k in all_sig[0]:
