@@ -32,7 +32,7 @@ def plot_ecg(ecg, leads = PTB_ORDER, sf = 250, file_name = None, plot_title = No
     plt.close()
 
 def plot_forecast(full_gt, full_pred, n_ctx_flat, n_gt_end, n_pred_end,
-                  report, save_path, segment_len=2500, leads=PTB_ORDER, sf=250):
+                  report, save_path, segment_len=2500, leads=PTB_ORDER, sf=250, ctx_per_lead=None):
     n_leads = full_gt.shape[0]
     t = np.arange(segment_len) / sf
 
@@ -40,7 +40,7 @@ def plot_forecast(full_gt, full_pred, n_ctx_flat, n_gt_end, n_pred_end,
     axes = np.atleast_1d(axes)
     for i, ax in enumerate(axes):
         lead_start = i * segment_len
-        bnd = np.clip(n_ctx_flat - lead_start, 0, segment_len)
+        bnd = ctx_per_lead if ctx_per_lead is not None else np.clip(n_ctx_flat - lead_start, 0, segment_len)
         gt_end = np.clip(n_gt_end - lead_start, 0, segment_len)
         pred_end = np.clip(n_pred_end - lead_start, 0, segment_len)
         pad_start = min(gt_end, pred_end)

@@ -37,6 +37,7 @@ def _eval_forecasting_signal_head(nn, dataloader, args):
     max_seq_len = args.bpe_symbolic_len
     signal_shape = (1, n_leads, args.segment_len)
     num_steps = getattr(args, "signal_head_num_steps", 50)
+    forecast_start = int(args.segment_len * (1 - args.forecast_ratio))
 
     with torch.no_grad():
         for step, batch in enumerate(progress):
@@ -52,14 +53,13 @@ def _eval_forecasting_signal_head(nn, dataloader, args):
             pred_signal = nn.generate_signal(tgt_ids, max_new_tokens, signal_shape, num_steps).cpu().numpy()
             gt_denorm = data_repr.denormalize(gt_signal[0].ravel(), mn, mx)
             pred_denorm = data_repr.denormalize(pred_signal[0].ravel(), mn, mx)
-            min_len = min(len(gt_denorm), len(pred_denorm))
-            all_sig.append(forecast_metrics(pred_denorm[:min_len], gt_denorm[:min_len]))
+            full_gt = gt_denorm[:n_leads * args.segment_len].reshape(n_leads, args.segment_len)
+            full_pred = pred_denorm[:n_leads * args.segment_len].reshape(n_leads, args.segment_len)
+            all_sig.append(forecast_metrics(full_pred[:, forecast_start:].ravel(), full_gt[:, forecast_start:].ravel()))
             if step < 20:
-                full_gt = gt_denorm[:n_leads * args.segment_len].reshape(n_leads, args.segment_len)
-                full_pred = pred_denorm[:n_leads * args.segment_len].reshape(n_leads, args.segment_len)
                 plot_forecast(full_gt, full_pred, 0, n_leads * args.segment_len, n_leads * args.segment_len,
                               report, f"{plot_dir}/plot_{step}.png",
-                              segment_len=args.segment_len, leads=lead_names, sf=args.sf)
+                              segment_len=args.segment_len, leads=lead_names, sf=args.sf, ctx_per_lead=forecast_start)
             if step > 3:
                 break
 
