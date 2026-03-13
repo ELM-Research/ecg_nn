@@ -61,7 +61,8 @@ class BuildNN:
             vocab_size = data_representation.vocab_size
             if self.args.nn_ckpt:
                 ckpt = torch.load(self.args.nn_ckpt, map_location="cpu", weights_only=False)
-                vocab_size = ckpt["model_state_dict"]["token_emb.weight"].shape[0]
+                sd = ckpt["model_state_dict"]
+                vocab_size = sd.get("token_emb.weight", sd.get("decoder.token_emb.weight")).shape[0]
             if self.args.neural_network == "trans_discrete_decoder":
                 from neural_networks.transformer.discrete.decoder import DecoderTransformerConfig, DecoderTransformer
                 cfg = DecoderTransformerConfig(vocab_size=vocab_size, pad_id=self.args.pad_id, max_seq_len=self.args.bpe_symbolic_len)
