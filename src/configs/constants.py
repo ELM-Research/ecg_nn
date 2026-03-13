@@ -30,6 +30,9 @@ TRANSFORMER_MODELS = {
     "trans_discrete_decoder": {
         "find_unused_parameters": False,
     },
+    "trans_discrete_decoder_fm": {
+        "find_unused_parameters": False,
+    },
     "trans_continuous_nepa": {
         "find_unused_parameters": False,
     },

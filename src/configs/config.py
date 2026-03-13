@@ -65,6 +65,7 @@ def get_args(mode: Mode) -> argparse.Namespace:
             help="Please choose the main neural network",
             choices=[
                 "trans_discrete_decoder",
+                "trans_discrete_decoder_fm",
                 "trans_continuous_nepa",
                 "trans_continuous_dit",
                 "mae_vit",
@@ -76,6 +77,9 @@ def get_args(mode: Mode) -> argparse.Namespace:
         )
 
         parser.add_argument("--norm_eps", type=float, default=1e-6, help="Please choose the normalization epsilon")
+
+        parser.add_argument("--flow_matching_loss_weight", type=float, default=1.0,
+                            help="Weight for the continuous flow matching head loss")
 
         parser.add_argument("--wandb", action="store_true", default=None, help="Enable logging")
 

@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -16,6 +17,8 @@ class DecoderTransformerConfig:
     num_layers: int = 12
     dropout: float = 0.1
     max_seq_len: int = 512
+    flow_matching_head: bool = False
+    flow_matching_loss_weight: float = 1.0
 
 
 @dataclass
@@ -23,6 +26,9 @@ class DecoderTransformerOutput:
     loss: Optional[torch.Tensor]
     logits: torch.Tensor
     hidden_states: Optional[torch.Tensor] = None
+    token_loss: Optional[torch.Tensor] = None
+    flow_loss: Optional[torch.Tensor] = None
+    flow_prediction: Optional[torch.Tensor] = None
 
 
 class DecoderBlock(nn.Module):
@@ -58,6 +64,18 @@ class DecoderTransformer(nn.Module):
         self.dropout = nn.Dropout(cfg.dropout)
         self.layers = nn.ModuleList([DecoderBlock(cfg.d_model, cfg.n_heads, cfg.dim_ff, cfg.dropout) for _ in range(cfg.num_layers)])
         self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+        self.flow_matching_head = None
+        self.flow_time_mlp = None
+        if cfg.flow_matching_head:
+            self.flow_in = nn.Linear(1, cfg.d_model)
+            self.flow_hid = nn.Linear(cfg.d_model, cfg.d_model)
+            self.flow_out = nn.Linear(cfg.d_model, 1)
+            self.flow_time_mlp = nn.Sequential(
+                nn.Linear(cfg.d_model, cfg.d_model),
+                nn.SiLU(),
+                nn.Linear(cfg.d_model, cfg.d_model),
+            )
+            self.flow_matching_head = nn.LayerNorm(cfg.d_model)
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -76,30 +94,88 @@ class DecoderTransformer(nn.Module):
         x = self.token_emb(input_ids) + self.pos_emb(pos)
         return self.dropout(x)
 
+    @staticmethod
+    def _timestep_embedding(t: torch.Tensor, dim: int, max_period: int = 10000) -> torch.Tensor:
+        half = dim // 2
+        freqs = torch.exp(-math.log(max_period) * torch.arange(
+            half, device=t.device, dtype=torch.float32
+        ) / max(half, 1))
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = F.pad(embedding, (0, 1))
+        return embedding
+
     def _make_key_padding_mask(self, input_ids: torch.Tensor) -> torch.Tensor:
         return input_ids.eq(self.cfg.pad_id)
+
+    def _decode_hidden(self, tgt_ids: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> torch.Tensor:
+        x = self._embed(tgt_ids)
+        causal_mask = self._causal_mask(tgt_ids.size(1), x.device)
+        for layer in self.layers:
+            x = layer(x, attn_mask=causal_mask, key_padding_mask=tgt_key_padding_mask)
+        return x
+
+    def _flow_predict(self, hidden_states: torch.Tensor, signal_values: torch.Tensor,
+                      tgt_key_padding_mask: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        pooled_hidden = hidden_states.masked_fill(tgt_key_padding_mask.unsqueeze(-1), 0.0)
+        valid_counts = (~tgt_key_padding_mask).sum(dim=1, keepdim=True).clamp(min=1)
+        pooled_hidden = pooled_hidden.sum(dim=1) / valid_counts
+        time_emb = self.flow_time_mlp(self._timestep_embedding(t, self.cfg.d_model))
+        cond = self.flow_matching_head(pooled_hidden + time_emb)
+        flow_h = self.flow_in(signal_values.unsqueeze(-1)) + cond.unsqueeze(1)
+        flow_h = F.gelu(self.flow_hid(flow_h))
+        return self.flow_out(flow_h).squeeze(-1)
 
     def forward(
         self,
         tgt_ids: torch.Tensor,
         tgt_key_padding_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
+        signal_values: Optional[torch.Tensor] = None,
+        signal_mask: Optional[torch.Tensor] = None,
     ) -> DecoderTransformerOutput:
         if tgt_key_padding_mask is None:
             tgt_key_padding_mask = self._make_key_padding_mask(tgt_ids)
-        x = self._embed(tgt_ids)
-        causal_mask = self._causal_mask(tgt_ids.size(1), x.device)
-        for layer in self.layers:
-            x = layer(x, attn_mask=causal_mask, key_padding_mask=tgt_key_padding_mask)
+        x = self._decode_hidden(tgt_ids, tgt_key_padding_mask)
         logits = self.lm_head(x)
-        loss = None
+        token_loss = None
         if labels is not None:
             labels = labels.to(logits.device)
             shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-        return DecoderTransformerOutput(loss=loss, logits=logits, hidden_states=x)
+            token_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+
+        flow_loss, flow_prediction = None, None
+        if self.flow_matching_head is not None and signal_values is not None:
+            signal_values = signal_values.to(logits.device)
+            if signal_values.dim() == 3:
+                signal_values = signal_values.squeeze(-1)
+            x1 = signal_values
+            x0 = torch.randn_like(x1)
+            t = torch.rand(x1.size(0), device=x1.device)
+            xt = (1 - t[:, None]) * x0 + t[:, None] * x1
+            flow_prediction = self._flow_predict(x, xt, tgt_key_padding_mask, t)
+            flow_target = x1 - x0
+            if signal_mask is not None:
+                signal_mask = signal_mask.to(logits.device).float()
+                sq = (flow_prediction - flow_target).pow(2) * signal_mask
+                flow_loss = sq.sum() / signal_mask.sum().clamp(min=1.0)
+            else:
+                flow_loss = F.mse_loss(flow_prediction, flow_target)
+
+        loss = token_loss
+        if flow_loss is not None:
+            loss = flow_loss * self.cfg.flow_matching_loss_weight if loss is None else loss + flow_loss * self.cfg.flow_matching_loss_weight
+        return DecoderTransformerOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=x,
+            token_loss=token_loss,
+            flow_loss=flow_loss,
+            flow_prediction=flow_prediction,
+        )
 
     @torch.inference_mode()
     def generate(
@@ -150,6 +226,20 @@ class DecoderTransformer(nn.Module):
             out_logits = torch.stack(all_logits, dim=1)
             return tokens, out_logits
         return tokens
+
+    @torch.inference_mode()
+    def generate_signal(self, tgt_ids: torch.Tensor, signal_len: int, num_steps: int = 10) -> torch.Tensor:
+        if self.flow_matching_head is None:
+            raise ValueError("flow matching head is disabled")
+        key_padding_mask = self._make_key_padding_mask(tgt_ids)
+        hidden_states = self._decode_hidden(tgt_ids, key_padding_mask)
+        signal = torch.randn(tgt_ids.size(0), signal_len, device=tgt_ids.device)
+        dt = 1.0 / max(num_steps, 1)
+        for i in range(num_steps):
+            t = torch.full((tgt_ids.size(0),), (i + 0.5) * dt, device=tgt_ids.device)
+            v = self._flow_predict(hidden_states, signal, key_padding_mask, t)
+            signal = signal + v * dt
+        return signal
 
     def resize_embeddings(self, new_vocab_size: int):
         print("Resizing Embeddings")

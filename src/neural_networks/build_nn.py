@@ -43,9 +43,15 @@ class BuildNN:
             if self.args.nn_ckpt:
                 ckpt = torch.load(self.args.nn_ckpt, map_location="cpu", weights_only=False)
                 vocab_size = ckpt["model_state_dict"]["token_emb.weight"].shape[0]
-            if self.args.neural_network == "trans_discrete_decoder":
+            if self.args.neural_network in {"trans_discrete_decoder", "trans_discrete_decoder_fm"}:
                 from neural_networks.transformer.discrete.decoder import DecoderTransformerConfig, DecoderTransformer
-                cfg = DecoderTransformerConfig(vocab_size=vocab_size, pad_id=self.args.pad_id, max_seq_len=self.args.bpe_symbolic_len)
+                cfg = DecoderTransformerConfig(
+                    vocab_size=vocab_size,
+                    pad_id=self.args.pad_id,
+                    max_seq_len=self.args.bpe_symbolic_len,
+                    flow_matching_head=self.args.neural_network == "trans_discrete_decoder_fm",
+                    flow_matching_loss_weight=self.args.flow_matching_loss_weight,
+                )
                 model = DecoderTransformer(cfg)
                 if self.args.bfloat_16:
                     model = model.to(torch.bfloat16) # decoder only usually bfloat16
@@ -111,7 +117,8 @@ class BuildNN:
         if "trans_discrete" in self.args.neural_network:
             old_vocab = state["token_emb.weight"].shape[0]
             new_vocab = data_representation.vocab_size
-            nn_components["neural_network"].load_state_dict(state, strict=True)
+            strict = self.args.neural_network != "trans_discrete_decoder_fm"
+            nn_components["neural_network"].load_state_dict(state, strict=strict)
             if new_vocab > old_vocab:
                 nn_components["neural_network"].resize_embeddings(new_vocab)
                 if is_main():

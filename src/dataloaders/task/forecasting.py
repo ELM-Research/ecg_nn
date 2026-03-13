@@ -37,8 +37,17 @@ class Forecasting:
         inputs = torch.as_tensor(inputs, dtype=torch.long)
         labels = torch.as_tensor(labels, dtype=torch.long) if labels is not None else None
 
-        if self.args.neural_network == "trans_discrete_decoder":
+        if self.args.neural_network in {"trans_discrete_decoder", "trans_discrete_decoder_fm"}:
             out = {"tgt_ids": inputs, "labels": labels}
+            if self.args.neural_network == "trans_discrete_decoder_fm":
+                signal_values = transformed_data["normalized_signal"]
+                signal_mask = (labels != -100).float().cpu().numpy()
+                signal_values = signal_values[:signal_mask.shape[0]]
+                if signal_values.shape[0] < signal_mask.shape[0]:
+                    pad = signal_mask.shape[0] - signal_values.shape[0]
+                    signal_values = np.pad(signal_values, (0, pad))
+                out["signal_values"] = torch.as_tensor(signal_values, dtype=torch.float32)
+                out["signal_mask"] = torch.as_tensor(signal_mask, dtype=torch.float32)
             if "eval" in self.args.mode:
                 out.update({"min": transformed_data["min"], "max": transformed_data["max"],
                             "report": transformed_data["report"], "orig_len" : orig_len})

@@ -35,7 +35,7 @@ class BPESymbolic:
         report = data.get("report", "")
         if self.args.condition:
             data["ecg"] = data["ecg"][self.args.condition_lead]
-        per_mod_tokens, mn, mx = self.signal_to_bpe_tokens(data["ecg"])
+        per_mod_tokens, mn, mx, normalized_signal = self.signal_to_bpe_tokens(data["ecg"])
         skip_pad = "eval" in self.args.mode
         seq = self.build_autoregressive_sequence(per_mod_tokens)
         seq = seq if skip_pad else self.pad_tokenized_data(seq)
@@ -44,6 +44,7 @@ class BPESymbolic:
             "min": mn,
             "max": mx,
             "report": report,
+            "normalized_signal": normalized_signal.astype(np.float32),
         }
 
     def signal_to_bpe_tokens(self, ecg: np.ndarray):
@@ -54,7 +55,7 @@ class BPESymbolic:
         joined_symbols = "".join(symbols.ravel())
         bpe_tokens = bpe.encode_symbol(joined_symbols, self.merges)
         per_mod_tokens.append(bpe_tokens)
-        return per_mod_tokens, mn, mx
+        return per_mod_tokens, mn, mx, clipped_arr.reshape(-1)
 
     def build_autoregressive_sequence(self, per_mod_tokens: List[List[int]]) -> List[int]:
         flat: List[int] = []
